@@ -1,0 +1,400 @@
+CREATE DATABASE kalvitrack;
+USE kalvitrack;
+CREATE TABLE user_roles (
+    user_id INT AUTO_INCREMENT PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    hashed_password VARCHAR(255) NOT NULL,
+    role ENUM('ADMIN', 'HR', 'FACULTY') NOT NULL,
+    status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
+    reset_password_token VARCHAR(255) DEFAULT NULL,
+    reset_token_expiry DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+ALTER TABLE user_roles 
+MODIFY COLUMN role ENUM('ADMIN', 'HR', 'FACULTY', 'INTERVIEW_PANELIST') NOT NULL;
+ALTER TABLE user_roles 
+ADD COLUMN full_name VARCHAR(100) NOT NULL AFTER email;
+
+ALTER TABLE user_roles
+ADD COLUMN must_reset_password BOOLEAN DEFAULT FALSE AFTER status;
+ALTER TABLE user_roles
+ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP 
+ON UPDATE CURRENT_TIMESTAMP AFTER created_at;
+ALTER TABLE user_roles
+ADD COLUMN failed_login_attempts INT DEFAULT 0;
+ALTER TABLE user_roles
+ADD COLUMN last_failed_attempt TIMESTAMP DEFAULT NULL AFTER failed_login_attempts;
+ALTER TABLE user_roles
+ADD COLUMN account_locked_until DATETIME DEFAULT NULL AFTER last_failed_attempt;
+show tables;
+desc user_roles;
+select * from user_roles;
+select * from students;
+delete from students where student_id >=1;
+SELECT status FROM user_roles WHERE email = 'testuser13@gmail.com';
+ALTER TABLE students AUTO_INCREMENT = 1;
+ALTER TABLE user_roles AUTO_INCREMENT = 2;
+CREATE TABLE students (
+    student_id INT AUTO_INCREMENT PRIMARY KEY,
+    -- Basic Info
+    full_name VARCHAR(100) NULL, -- null until student registers
+    email VARCHAR(255) UNIQUE NOT NULL,
+    hashed_password VARCHAR(255) NULL, -- null until student registers
+    mobile_number VARCHAR(20) NULL,
+    college_name VARCHAR(200) NULL,
+    year_of_graduation YEAR NULL,
+    resume_path VARCHAR(500) NULL,
+
+    -- Role Management
+    role ENUM('ZSGS', 'PMIS') NOT NULL, -- only students
+
+    -- Account Security
+    status ENUM('PENDING','ACTIVE','INACTIVE','SUSPENDED') DEFAULT 'ACTIVE',
+    email_verified BOOLEAN DEFAULT FALSE,
+    email_verification_token VARCHAR(255) NULL,
+    reset_password_token VARCHAR(255) NULL,
+    reset_token_expiry DATETIME NULL,
+
+    -- Security Tracking
+    failed_login_attempts INT DEFAULT 0,
+    last_failed_attempt TIMESTAMP DEFAULT NULL,
+    account_locked_until DATETIME DEFAULT NULL,
+
+    -- Timestamps
+    last_login TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_email (email),
+    INDEX idx_role(role),
+    INDEX idx_status (status)
+);
+-- Safe to delete all availability
+DELETE FROM interviewers;
+
+DELETE FROM interviewer_availability;
+ALTER TABLE interviewer_availability AUTO_INCREMENT = 1;
+ALTER TABLE interviewers AUTO_INCREMENT = 1;
+
+SELECT VERSION();
+CREATE TABLE interviewers (
+    interviewer_id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    max_interviews_per_day INT DEFAULT 5,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES user_roles(user_id) ON DELETE CASCADE,
+    INDEX idx_user_id (user_id),
+    INDEX idx_active (is_active)
+);
+SELECT *FROM interviewer_availability;
+select * from interviewers;
+ALTER TABLE interviewers 
+ADD CONSTRAINT chk_interviewer_role 
+CHECK (
+    user_id IN (
+        SELECT user_id FROM user_roles 
+        WHERE role IN ('FACULTY', 'INTERVIEW_PANELIST')
+    )
+);
+SELECT i.interviewer_id, i.user_id, ur.email, ur.role
+FROM interviewers i
+JOIN user_roles ur ON i.user_id = ur.user_id
+WHERE ur.status = 'ACTIVE' AND i.is_active = TRUE;
+SELECT ia.availability_id, ia.interviewer_id, ia.available_date, ia.start_time, ia.end_time
+FROM interviewer_availability ia
+WHERE ia.is_booked = FALSE AND ia.is_active = TRUE;
+SELECT i.interviewer_id, i.user_id, ur.email, ur.full_name, ur.role
+FROM interviewers i
+JOIN user_roles ur ON i.user_id = ur.user_id
+WHERE ur.status = 'ACTIVE' 
+  AND i.is_active = TRUE
+  AND ur.role IN ('FACULTY', 'INTERVIEW_PANELIST'); -- Include both roles
+CREATE TABLE interviewer_availability (
+    availability_id INT AUTO_INCREMENT PRIMARY KEY,
+    interviewer_id INT NOT NULL,
+    available_date DATE NOT NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    is_booked BOOLEAN DEFAULT FALSE,
+    slot_duration_minutes INT DEFAULT 60, -- Duration for each interview slot
+    max_concurrent_interviews INT DEFAULT 1,
+    notes TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (interviewer_id) REFERENCES interviewers(interviewer_id) ON DELETE CASCADE,
+    INDEX idx_interviewer_date (interviewer_id, available_date),
+    INDEX idx_date_time (available_date, start_time),
+    INDEX idx_booked (is_booked),
+    INDEX idx_active (is_active),
+    INDEX idx_availability_active_date (is_active, available_date),
+    INDEX idx_interviewer_active (interviewer_id, is_active),
+    -- Ensure no overlapping time slots for same interviewer on same date
+    UNIQUE KEY unique_interviewer_slot (interviewer_id, available_date, start_time, end_time)
+);
+SELECT 
+    ia.availability_id,
+    ia.interviewer_id,
+    ia.available_date,
+    ia.start_time,
+    ia.end_time,
+    ia.is_booked,
+    ia.is_active,
+    i.user_id,
+    u.full_name,
+    u.role
+FROM interviewer_availability ia
+LEFT JOIN interviewers i ON ia.interviewer_id = i.interviewer_id
+LEFT JOIN user_roles u ON i.user_id = u.user_id
+WHERE ia.is_active = true
+ORDER BY ia.available_date, ia.start_time;
+CREATE TABLE interview_sessions (
+    session_id INT AUTO_INCREMENT PRIMARY KEY,
+    student_id BIGINT NOT NULL,
+    interviewer_id INT NOT NULL,
+    scheduled_by_hr BIGINT NOT NULL, -- HR user who scheduled
+    interview_date DATE NOT NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    meeting_link VARCHAR(500) NULL, -- Meeting link added by interviewer (initially null)
+    link_added_at TIMESTAMP NULL, -- When interviewer added the link
+    session_status ENUM('SCHEDULED', 'LINK_ADDED', 'COMPLETED', 'CANCELLED', 'RESCHEDULED', 'NO_SHOW') DEFAULT 'SCHEDULED',
+    -- Interview Result Status (Set by Interviewer after interview)
+    interview_result ENUM('SELECTED', 'REJECTED', 'WAITING_LIST') NULL,
+    result_updated_at TIMESTAMP NULL,
+    remarks TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
+    FOREIGN KEY (interviewer_id) REFERENCES interviewers(interviewer_id) ON DELETE CASCADE,
+    FOREIGN KEY (scheduled_by_hr) REFERENCES user_roles(user_id),
+    -- Ensure student can only have ONE active interview session
+    UNIQUE KEY unique_student_interview (student_id),
+    INDEX idx_interviewer_date (interviewer_id, interview_date),
+    INDEX idx_session_status (session_status),
+    INDEX idx_interview_result (interview_result),
+    INDEX idx_scheduled_by (scheduled_by_hr),
+    INDEX idx_active (is_active),
+    INDEX idx_sessions_active_status (is_active, session_status),
+    INDEX idx_student_active (student_id, is_active)
+);
+CREATE TABLE interview_feedback (
+    feedback_id INT AUTO_INCREMENT PRIMARY KEY,
+    session_id INT NOT NULL,
+    interviewer_id INT NOT NULL,
+    -- Technical Assessment
+    technical_skills_rating INT CHECK (technical_skills_rating BETWEEN 1 AND 10),
+    problem_solving_rating INT CHECK (problem_solving_rating BETWEEN 1 AND 10),
+    coding_ability_rating INT CHECK (coding_ability_rating BETWEEN 1 AND 10),
+    -- Communication Assessment  
+    communication_rating INT CHECK (communication_rating BETWEEN 1 AND 10),
+    confidence_rating INT CHECK (confidence_rating BETWEEN 1 AND 10),
+    -- Overall Assessment
+    overall_impression ENUM('EXCELLENT', 'VERY_GOOD', 'GOOD', 'AVERAGE', 'BELOW_AVERAGE', 'POOR'),
+    strengths TEXT,
+    weaknesses TEXT,
+    areas_for_improvement TEXT,
+    specific_comments TEXT,
+    -- Final Decision (matches interview_result in interview_sessions)
+    recommendation ENUM('SELECTED', 'REJECTED', 'WAITING_LIST') NOT NULL,
+    confidence_level ENUM('VERY_CONFIDENT', 'CONFIDENT', 'SOMEWHAT_CONFIDENT', 'UNSURE') DEFAULT 'CONFIDENT',
+    -- Additional Questions
+    would_hire_again BOOLEAN,
+    suitable_for_role BOOLEAN,
+    -- Metadata
+    feedback_submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_visible_to_hr BOOLEAN DEFAULT TRUE, -- Only HR can see this
+    FOREIGN KEY (session_id) REFERENCES interview_sessions(session_id) ON DELETE CASCADE,
+    FOREIGN KEY (interviewer_id) REFERENCES interviewers(interviewer_id),
+    -- Ensure one feedback per session
+    UNIQUE KEY unique_session_feedback (session_id),
+    INDEX idx_session (session_id),
+    INDEX idx_recommendation (recommendation),
+    INDEX idx_submitted_at (feedback_submitted_at)
+);
+
+CREATE TABLE reschedule_requests (
+    request_id INT AUTO_INCREMENT PRIMARY KEY,
+    session_id INT NOT NULL,
+    requested_by_student BIGINT NOT NULL,
+    reason TEXT NOT NULL,
+    requested_date DATE,
+    requested_start_time TIME,
+    requested_end_time TIME,
+    status ENUM('PENDING', 'APPROVED', 'REJECTED') DEFAULT 'PENDING',
+    approved_by_hr BIGINT NULL,
+    hr_comments TEXT,
+    request_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    processed_date TIMESTAMP NULL,
+    FOREIGN KEY (session_id) REFERENCES interview_sessions(session_id) ON DELETE CASCADE,
+    FOREIGN KEY (requested_by_student) REFERENCES students(student_id),
+    FOREIGN KEY (approved_by_hr) REFERENCES user_roles(user_id),
+    INDEX idx_session (session_id),
+    INDEX idx_status (status),
+    INDEX idx_request_date (request_date)
+);
+CREATE TABLE email_notifications (
+    notification_id INT AUTO_INCREMENT PRIMARY KEY,
+    recipient_email VARCHAR(255) NOT NULL,
+    recipient_type ENUM('STUDENT', 'INTERVIEWER', 'HR') NOT NULL,
+    subject VARCHAR(500) NOT NULL,
+    email_type ENUM(
+        'INTERVIEW_SCHEDULED',
+        'INTERVIEW_REMINDER',
+        'INTERVIEW_CANCELLED',
+        'INTERVIEW_RESCHEDULED',
+        'RESCHEDULE_REQUEST',
+        'RESCHEDULE_APPROVED',
+        'RESCHEDULE_REJECTED',
+        'INTERVIEW_RESULT_NOTIFICATION'
+    ) NOT NULL,
+    session_id INT,
+    request_id INT NULL, -- For reschedule related emails
+    email_content TEXT,
+    sent_status ENUM('PENDING', 'SENT', 'FAILED') DEFAULT 'PENDING',
+    sent_at TIMESTAMP NULL,
+    error_message TEXT,
+    retry_count INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES interview_sessions(session_id) ON DELETE SET NULL,
+    FOREIGN KEY (request_id) REFERENCES reschedule_requests(request_id) ON DELETE SET NULL,
+    INDEX idx_recipient (recipient_email),
+    INDEX idx_status (sent_status),
+    INDEX idx_type (email_type),
+    INDEX idx_created (created_at)
+);
+CREATE VIEW available_interview_slots AS
+SELECT 
+    ia.availability_id,
+    ia.interviewer_id,
+    ur.full_name AS interviewer_name,
+    ur.email AS interviewer_email,
+    ur.role AS interviewer_role,
+    ia.available_date,
+    ia.start_time,
+    ia.end_time,
+    ia.slot_duration_minutes,
+    ia.is_booked,
+    ia.notes
+FROM interviewer_availability ia
+JOIN interviewers i ON ia.interviewer_id = i.interviewer_id
+JOIN user_roles ur ON i.user_id = ur.user_id
+WHERE ia.is_booked = FALSE 
+AND ia.available_date >= CURDATE()
+AND i.is_active = TRUE
+AND ia.is_active = TRUE
+AND ur.status = 'ACTIVE'
+ORDER BY ia.available_date, ia.start_time;
+CREATE VIEW scheduled_interviews_view AS
+SELECT 
+    iss.session_id,
+    s.student_id,
+    s.full_name AS student_name,
+    s.email AS student_email,
+    s.mobile_number,
+    s.college_name,
+    ur_int.full_name AS interviewer_name,
+    ur_int.email AS interviewer_email,
+    ur_hr.full_name AS scheduled_by_hr_name,
+    iss.interview_date,
+    iss.start_time,
+    iss.end_time,
+    iss.meeting_link,
+    iss.session_status,
+    iss.interview_result,
+    iss.result_updated_at,
+    iss.created_at,
+    s.status AS student_status,
+    i.is_active AS interviewer_active,
+    iss.is_active AS session_active
+FROM interview_sessions iss
+JOIN students s ON iss.student_id = s.student_id
+JOIN interviewers i ON iss.interviewer_id = i.interviewer_id
+JOIN user_roles ur_int ON i.user_id = ur_int.user_id
+JOIN user_roles ur_hr ON iss.scheduled_by_hr = ur_hr.user_id
+WHERE s.status = 'ACTIVE' 
+AND i.is_active = TRUE
+AND iss.is_active = TRUE
+ORDER BY iss.interview_date DESC, iss.start_time;
+CREATE VIEW hr_interview_results AS
+SELECT 
+    iss.session_id,
+    s.full_name AS student_name,
+    s.email AS student_email,
+    s.mobile_number,
+    s.college_name,
+    s.year_of_graduation,
+    ur_int.full_name AS interviewer_name,
+    iss.interview_date,
+    iss.start_time,
+    iss.interview_result,
+    iss.result_updated_at,
+    -- Feedback details
+    fb.technical_skills_rating,
+    fb.problem_solving_rating,
+    fb.coding_ability_rating,
+    fb.communication_rating,
+    fb.confidence_rating,
+    fb.overall_impression,
+    fb.strengths,
+    fb.weaknesses,
+    fb.areas_for_improvement,
+    fb.specific_comments,
+    fb.recommendation,
+    fb.confidence_level,
+    fb.would_hire_again,
+    fb.suitable_for_role,
+    fb.feedback_submitted_at,
+    -- Status indicators
+    s.status AS student_status,
+    i.is_active AS interviewer_active
+FROM interview_sessions iss
+JOIN students s ON iss.student_id = s.student_id
+JOIN interviewers i ON iss.interviewer_id = i.interviewer_id
+JOIN user_roles ur_int ON i.user_id = ur_int.user_id
+LEFT JOIN interview_feedback fb ON iss.session_id = fb.session_id
+WHERE iss.session_status = 'COMPLETED'
+  AND s.status = 'ACTIVE'
+  AND i.is_active = TRUE
+  AND iss.is_active = TRUE
+ORDER BY iss.interview_date DESC;
+
+-- View for pending reschedule requests
+CREATE VIEW pending_reschedule_requests AS
+SELECT 
+    rr.request_id,
+    rr.session_id,
+    s.full_name AS student_name,
+    s.email AS student_email,
+    iss.interview_date AS original_date,
+    iss.start_time AS original_start_time,
+    rr.requested_date,
+    rr.requested_start_time,
+    rr.reason,
+    rr.request_date,
+    ur.full_name AS interviewer_name
+FROM reschedule_requests rr
+JOIN interview_sessions iss ON rr.session_id = iss.session_id
+JOIN students s ON rr.requested_by_student = s.student_id
+JOIN interviewers i ON iss.interviewer_id = i.interviewer_id
+JOIN user_roles ur ON i.user_id = ur.user_id
+WHERE rr.status = 'PENDING'
+AND s.status = TRUE
+AND i.is_active = TRUE
+AND iss.is_active = TRUE
+ORDER BY rr.request_date;
+
+SELECT 
+    ia.*,
+    i.interviewer_id,
+    u.full_name
+FROM interviewer_availability ia
+LEFT JOIN interviewers i ON ia.interviewer_id = i.interviewer_id  
+LEFT JOIN user_roles ur ON i.user_id = ur.user_id
+LEFT JOIN user_roles u ON ur.user_id = u.user_id
+WHERE ia.is_active = true
+AND ia.available_date >= CURDATE()
+ORDER BY ia.available_date, ia.start_time;
